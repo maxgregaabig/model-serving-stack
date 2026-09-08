@@ -17,4 +17,4 @@ venv/
 
 .coverage
 htmlcov/
-results/
+results/load_tests/
