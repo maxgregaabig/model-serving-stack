@@ -232,14 +232,23 @@ The HPA scales the `vllm-server` Deployment between 1 and 4 replicas on the DCGM
 ## Testing
 
 ```bash
-# Install dev dependencies
+pip install -r requirements.txt
 pip install -e ".[dev]"
 
-# Run all checks (matches CI)
-ruff check . && mypy . && pytest --cov --cov-fail-under=80
+# Exactly what .github/workflows/ci.yml runs
+ruff check .
+pytest tests/ -v -m "not gpu" \
+  --cov=api --cov=vllm --cov=triton --cov=evals \
+  --cov-report=term-missing \
+  --cov-fail-under=80
+```
 
-# Run load test
-locust -f evals/load_test.py --headless -u 32 -r 4 --run-time 60s --host http://localhost:8000
+16 mock-based tests across six modules; measured coverage over the CI-scoped packages is 87% against an 80% gate. CI runs on `ubuntu-latest` with Python 3.11 and no GPU, so tests marked `@pytest.mark.gpu` are excluded. `mypy` is configured in `pyproject.toml` but is not part of CI. Coverage map and gaps: [docs/testing.md](docs/testing.md).
+
+Load test against a running gateway:
+
+```bash
+python -m evals.load_test --requests 500 --concurrency 32 --output-dir results/load_tests
 ```
 
 ---
