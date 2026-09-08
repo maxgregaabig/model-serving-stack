@@ -1,6 +1,6 @@
 # model-serving-stack
 
-> **Production LLM serving infrastructure** using Triton Inference Server, vLLM, and Ray Serve with OpenAI-compatible endpoints. Includes DCGM GPU autoscaling, Grafana/Prometheus observability, and BentoML packaging.
+> **Reference stack for serving LLMs on NVIDIA GPUs** — an OpenAI-compatible FastAPI gateway in front of vLLM, alongside Triton Inference Server and Ray Serve deployments, DCGM-driven Kubernetes autoscaling, Prometheus/Grafana observability, and a BentoML packaging path.
 
 [![CI](https://github.com/TylrDn/model-serving-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/TylrDn/model-serving-stack/actions)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
@@ -8,53 +8,57 @@
 
 ---
 
+Serving an LLM well is mostly an infrastructure problem: which runtime you pick changes latency by tens of percent, and the autoscaling signal you pick decides whether you scale before or after users feel it. This repo puts three common runtimes — vLLM, Triton Inference Server, and Ray Serve — behind one OpenAI-compatible API surface, alongside the Kubernetes, monitoring, and benchmarking pieces needed to compare and operate them. It is a reference implementation and a benchmarking harness, not a hosted service; every number quoted here comes from a committed artifact in [`results/`](results/).
+
 ## Architecture
 
 ```mermaid
 flowchart TD
     Client(["Client / App"])
-    GW["FastAPI Gateway\n(OpenAI-compatible)"] 
-    Router{"Backend Router"}
+    GW["FastAPI Gateway<br/>api/main.py<br/>(OpenAI-compatible, :8080)"]
 
-    subgraph Inference Backends
-        VLLM["vLLM Server\n(PagedAttention)"]
-        Triton["Triton Inference Server\n(TRT-LLM / ONNX)"]
-        Ray["Ray Serve\n(autoscaling deployment)"]
+    subgraph Backends ["Inference Backends"]
+        VLLM["vLLM Server<br/>(PagedAttention)"]
+        Triton["Triton Inference Server<br/>(Python backend)"]
+        Ray["Ray Serve<br/>(autoscaling deployment)"]
     end
 
-    subgraph Autoscaling
-        DCGM["DCGM Exporter\n(GPU metrics)"]
-        HPA["Kubernetes HPA\n(DCGM_FI_DEV_GPU_UTIL)"] 
+    subgraph Autoscaling ["GPU Autoscaling"]
+        DCGM["DCGM Exporter<br/>(GPU metrics)"]
+        Adapter["Prometheus Adapter"]
+        HPA["Kubernetes HPA<br/>(DCGM_FI_DEV_GPU_UTIL)"]
     end
 
-    subgraph Observability
+    subgraph Observability ["Observability"]
         Prom["Prometheus"]
         Graf["Grafana"]
     end
 
     Client --> GW
-    GW --> Router
-    Router --> VLLM
-    Router --> Triton
-    Router --> Ray
+    GW -->|"vllm/client.py"| VLLM
+    Client -->|"triton/client.py"| Triton
+    Client -->|"serve run"| Ray
+    Ray -->|"vllm/client.py"| VLLM
     DCGM -->|"GPU utilization metrics"| Prom
-    Prom --> HPA
+    Prom --> Adapter
+    Adapter --> HPA
     HPA -->|"scale replicas"| VLLM
-    HPA -->|"scale replicas"| Ray
     Prom --> Graf
 ```
+
+The gateway itself calls vLLM only; Triton and Ray Serve are deployed and addressed independently. See [docs/configuration.md](docs/configuration.md#there-is-no-backend-selector).
 
 ## Stack Components
 
 | Component | Role | Key Config |
 |-----------|------|------------|
-| **Triton Inference Server** | Multi-framework model serving (TRT-LLM, ONNX, TF, PyTorch) | `triton/model_repository/` |
-| **vLLM** | High-throughput LLM inference with PagedAttention | `vllm/vllm_config.yaml` |
-| **Ray Serve** | Autoscaling deployment with replica management | `ray_serve/deployment.py` |
-| **BentoML** | Portable model packaging + cloud export | `bentoml/service.py` |
-| **DCGM Exporter** | GPU utilization metrics for HPA | `autoscaling/dcgm-exporter.yaml` |
-| **FastAPI Gateway** | OpenAI-compatible `/v1/chat/completions` + `/v1/models` | `api/openai_server.py` |
-| **Prometheus + Grafana** | Full observability stack | `monitoring/` |
+| **FastAPI Gateway** | OpenAI-compatible `/v1/chat/completions`, `/v1/models`, `/health` on port `8080` | `api/main.py` |
+| **vLLM** | High-throughput LLM inference with PagedAttention | `vllm/server.py`, `vllm/batching_config.yaml` |
+| **Triton Inference Server** | Model repository whose Python backend wraps a vLLM engine | `triton/model_repository/llama3/` |
+| **Ray Serve** | Autoscaling deployment and multi-model traffic split | `ray_serve/deployment.py`, `ray_serve/multi_model_router.py` |
+| **BentoML** | Portable model packaging | `bentoml/service.py`, `bentoml/bentofile.yaml` |
+| **DCGM Exporter + HPA** | GPU utilization metrics driving pod autoscaling | `kubernetes/dcgm-exporter.yaml`, `kubernetes/hpa-dcgm.yaml` |
+| **Prometheus + Grafana** | Scrape config and GPU serving dashboard | `monitoring/prometheus/prometheus.yml`, `monitoring/grafana/gpu_serving_dashboard.json` |
 
 ---
 
