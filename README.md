@@ -136,6 +136,69 @@ Environment variables are read at process start (`python-dotenv` does not overri
 
 ---
 
+## Kubernetes Deployment
+
+```bash
+# DCGM exporter DaemonSet (namespace: monitoring)
+kubectl apply -f kubernetes/dcgm-exporter.yaml
+
+# Serving workloads (Deployment + Service in each file)
+kubectl apply -f kubernetes/vllm-deployment.yaml
+kubectl apply -f kubernetes/triton-deployment.yaml
+
+# HPA on DCGM_FI_DEV_GPU_UTIL, AverageValue target 70
+kubectl apply -f kubernetes/hpa-dcgm.yaml
+
+# Optional NGINX ingress for /vllm and /triton
+kubectl apply -f kubernetes/ingress.yaml
+
+kubectl get hpa vllm-gpu-hpa
+```
+
+The HPA scales the `vllm-server` Deployment between 1 and 4 replicas on the DCGM Exporter's `DCGM_FI_DEV_GPU_UTIL` metric. It requires [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to expose that metric through the Kubernetes external metrics API. Rationale and tuning guidance: [docs/autoscaling.md](docs/autoscaling.md).
+
+---
+
+## Benchmark Results (Baseline — 2026-06-09)
+
+Run against `meta/llama3-8b-instruct` on a single NVIDIA A10G (24GB), 500 requests at concurrency 32, 128 prompt tokens and 256 output tokens on average.
+
+| Backend | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Req/s | Concurrency |
+|---------|--------------|--------------|-------------------|-------|-------------|
+| vLLM (PagedAttention) | 142 | 387 | 1,840 | 28.4 | 32 |
+| Triton TRT-LLM | 98 | 241 | 2,310 | 35.7 | 32 |
+| Ray Serve (vLLM backend) | 156 | 412 | 1,780 | 27.5 | 32 |
+
+> **Key takeaway:** Triton delivers ~31% lower TTFT p50 than native vLLM at this concurrency (142 ms -> 98 ms). The recorded findings note that vLLM's PagedAttention advantage becomes dominant at concurrency >= 64.
+
+Raw data: [`results/baseline_bench_2026-06.json`](results/baseline_bench_2026-06.json). **These numbers are not currently reproducible from the repo** — the artifact records no commit SHA, command, or backend versions. Rerun commands and the full provenance gap are documented in [docs/benchmarks.md](docs/benchmarks.md).
+
+---
+
+## Testing
+
+```bash
+pip install -r requirements.txt
+pip install -e ".[dev]"
+
+# Exactly what .github/workflows/ci.yml runs
+ruff check .
+pytest tests/ -v -m "not gpu" \
+  --cov=api --cov=vllm --cov=triton --cov=evals \
+  --cov-report=term-missing \
+  --cov-fail-under=80
+```
+
+16 mock-based tests across six modules; measured coverage over the CI-scoped packages is 87% against an 80% gate. CI runs on `ubuntu-latest` with Python 3.11 and no GPU, so tests marked `@pytest.mark.gpu` are excluded. `mypy` is configured in `pyproject.toml` but is not part of CI. Coverage map and gaps: [docs/testing.md](docs/testing.md).
+
+Load test against a running gateway:
+
+```bash
+python -m evals.load_test --requests 500 --concurrency 32 --output-dir results/load_tests
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -190,78 +253,29 @@ model-serving-stack/
 
 ---
 
-## Benchmark Results (Baseline — 2026-06-09)
+## Documentation
 
-Run against `meta/llama3-8b-instruct` on a single NVIDIA A10G (24GB), 500 requests at concurrency 32, 128 prompt tokens and 256 output tokens on average.
-
-| Backend | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Req/s | Concurrency |
-|---------|--------------|--------------|-------------------|-------|-------------|
-| vLLM (PagedAttention) | 142 | 387 | 1,840 | 28.4 | 32 |
-| Triton TRT-LLM | 98 | 241 | 2,310 | 35.7 | 32 |
-| Ray Serve (vLLM backend) | 156 | 412 | 1,780 | 27.5 | 32 |
-
-> **Key takeaway:** Triton delivers ~31% lower TTFT p50 than native vLLM at this concurrency (142 ms -> 98 ms). The recorded findings note that vLLM's PagedAttention advantage becomes dominant at concurrency >= 64.
-
-Raw data: [`results/baseline_bench_2026-06.json`](results/baseline_bench_2026-06.json). **These numbers are not currently reproducible from the repo** — the artifact records no commit SHA, command, or backend versions. Rerun commands and the full provenance gap are documented in [docs/benchmarks.md](docs/benchmarks.md).
-
----
-
-## Kubernetes Deployment
-
-```bash
-# DCGM exporter DaemonSet (namespace: monitoring)
-kubectl apply -f kubernetes/dcgm-exporter.yaml
-
-# Serving workloads (Deployment + Service in each file)
-kubectl apply -f kubernetes/vllm-deployment.yaml
-kubectl apply -f kubernetes/triton-deployment.yaml
-
-# HPA on DCGM_FI_DEV_GPU_UTIL, AverageValue target 70
-kubectl apply -f kubernetes/hpa-dcgm.yaml
-
-# Optional NGINX ingress for /vllm and /triton
-kubectl apply -f kubernetes/ingress.yaml
-
-kubectl get hpa vllm-gpu-hpa
-```
-
-The HPA scales the `vllm-server` Deployment between 1 and 4 replicas on the DCGM Exporter's `DCGM_FI_DEV_GPU_UTIL` metric. It requires [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to expose that metric through the Kubernetes external metrics API. Rationale and tuning guidance: [docs/autoscaling.md](docs/autoscaling.md).
-
----
-
-## Testing
-
-```bash
-pip install -r requirements.txt
-pip install -e ".[dev]"
-
-# Exactly what .github/workflows/ci.yml runs
-ruff check .
-pytest tests/ -v -m "not gpu" \
-  --cov=api --cov=vllm --cov=triton --cov=evals \
-  --cov-report=term-missing \
-  --cov-fail-under=80
-```
-
-16 mock-based tests across six modules; measured coverage over the CI-scoped packages is 87% against an 80% gate. CI runs on `ubuntu-latest` with Python 3.11 and no GPU, so tests marked `@pytest.mark.gpu` are excluded. `mypy` is configured in `pyproject.toml` but is not part of CI. Coverage map and gaps: [docs/testing.md](docs/testing.md).
-
-Load test against a running gateway:
-
-```bash
-python -m evals.load_test --requests 500 --concurrency 32 --output-dir results/load_tests
-```
+| Document | Contents |
+|----------|----------|
+| [docs/architecture.md](docs/architecture.md) | Component diagram, backend trade-offs, request flow, design decisions |
+| [docs/configuration.md](docs/configuration.md) | Environment variables, YAML ownership, worked examples |
+| [docs/benchmarks.md](docs/benchmarks.md) | Baseline results, rerun commands, reproducibility gap |
+| [docs/autoscaling.md](docs/autoscaling.md) | DCGM-driven HPA: dependencies, apply order, tuning |
+| [docs/testing.md](docs/testing.md) | Coverage map, uncovered areas, `gpu` marker |
+| [results/README.md](results/README.md) | Required metadata schema for new benchmark artifacts |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) · [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Workflow, release history, security policy, conduct |
 
 ---
 
 ## Related Repos
 
-This repo is part of the [NVIDIA Solutions Architect portfolio](https://github.com/TylrDn):
+Sibling reference projects by the same author. They are independent repositories, not runtime dependencies of this one.
 
 | Repo | Relationship |
 |------|--------------|
-| [`nvidia-nim-agent-toolkit`](https://github.com/TylrDn/nvidia-nim-agent-toolkit) | NIM client that routes to this serving stack |
-| [`inference-optimization-bench`](https://github.com/TylrDn/inference-optimization-bench) | Benchmark results inform backend selection here |
-| [`llm-finetuning-lab`](https://github.com/TylrDn/llm-finetuning-lab) | Fine-tuned/exported model weights served here |
+| [`nvidia-nim-agent-toolkit`](https://github.com/TylrDn/nvidia-nim-agent-toolkit) | Multi-agent toolkit over NVIDIA NIM — the client side of a serving stack like this |
+| [`inference-optimization-bench`](https://github.com/TylrDn/inference-optimization-bench) | Quantization and inference benchmarking (GGUF, AWQ, GPTQ) that informs backend choice |
+| [`llm-finetuning-lab`](https://github.com/TylrDn/llm-finetuning-lab) | LoRA/QLoRA fine-tuning pipeline producing weights that a stack like this serves |
 
 ---
 
