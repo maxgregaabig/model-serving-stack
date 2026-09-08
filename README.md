@@ -66,57 +66,73 @@ The gateway itself calls vLLM only; Triton and Ray Serve are deployed and addres
 
 ### 1. Prerequisites
 
-- NVIDIA GPU with CUDA 12.1+
+- NVIDIA GPU and driver (the Compose services request `nvidia` GPU devices; `kubernetes/vllm-deployment.yaml` requests `nvidia.com/gpu: 1`)
 - Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- Python 3.11+
+- Python 3.11+ (`requires-python = ">=3.11"`)
 
 ### 2. Environment
 
 ```bash
 cp .env.template .env
-# Edit .env with your values (see table below)
 ```
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NGC_API_KEY` | ✅ | NVIDIA NGC API key for pulling NIM/Triton containers |
-| `NIM_API_KEY` | ✅ | NVIDIA Inference Microservices API key |
-| `MODEL_PATH` | ✅ | Local path to model weights (e.g., `/models/llama3-8b`) |
-| `MODEL_NAME` | ✅ | Canonical model name (e.g., `meta/llama3-70b-instruct`) |
-| `SERVING_BACKEND` | ✅ | Backend selector: `vllm` \| `triton` \| `ray` |
-| `VLLM_TENSOR_PARALLEL_SIZE` | Optional | Number of GPUs for tensor parallelism (default: `1`) |
-| `TRITON_HTTP_PORT` | Optional | Triton HTTP port (default: `8000`) |
-| `PROMETHEUS_PORT` | Optional | Prometheus scrape port (default: `9090`) |
-| `LANGFUSE_PUBLIC_KEY` | Optional | Langfuse observability (graceful no-op if unset) |
-| `LANGFUSE_SECRET_KEY` | Optional | Langfuse observability (graceful no-op if unset) |
+The variables the code actually reads:
 
-### 3. Run with Docker Compose
+| Variable | Default | Read by |
+|----------|---------|---------|
+| `MODEL_NAME` | `meta/llama3-8b-instruct` | `vllm/client.py`, `vllm/server.py` |
+| `VLLM_HOST` | `localhost` (client), `0.0.0.0` (server) | `vllm/client.py`, `vllm/server.py` |
+| `VLLM_PORT` | `8000` | `vllm/client.py`, `vllm/server.py` |
+| `TENSOR_PARALLEL_SIZE` | `1` | `vllm/server.py` |
+| `MAX_MODEL_LEN` | `8192` | `vllm/server.py` |
+| `VLLM_MODEL_NAME` | `meta-llama/Meta-Llama-3-8B-Instruct` | `vllm/openai_server.py`, root `docker-compose.yml` |
+| `VLLM_TENSOR_PARALLEL_SIZE` | `1` | `vllm/openai_server.py` |
+| `TRITON_HOST` / `TRITON_HTTP_PORT` / `TRITON_GRPC_PORT` | `localhost` / `8000` / `8001` | `triton/client.py` |
+| `PROMETHEUS_PORT` / `GRAFANA_PORT` | `9090` / `3000` | root `docker-compose.yml` |
+| `MODEL_PATH` / `HF_TOKEN` | — | `deploy/docker-compose.yml` |
+
+`.env.template` also ships `NGC_API_KEY`, `NVIDIA_API_KEY`, `TRITON_METRICS_PORT`, `RAY_ADDRESS`, `RAY_SERVE_PORT` and `LANGCHAIN_*`, which no module in this repo reads — they exist for the surrounding tooling. Full details, including YAML file ownership, are in [docs/configuration.md](docs/configuration.md).
+
+### 3. Run
 
 ```bash
-# Start the full stack (vLLM + gateway + monitoring)
-docker compose up
+# Gateway (:8080) + vLLM + Prometheus + Grafana
+docker compose -f deploy/docker-compose.yml up
 
-# Or with GPU passthrough
-docker compose --profile gpu up
+# Or backends only: Triton (:8000/:8001/:8002), vLLM (:8010), Prometheus, Grafana
+docker compose up
+```
+
+Without Docker, run the pieces directly from the repository root:
+
+```bash
+python -m vllm.server                              # vLLM on :8000
+uvicorn api.main:app --host 0.0.0.0 --port 8080    # gateway on :8080
 ```
 
 ### 4. Verify
 
 ```bash
-# Health check
-curl http://localhost:8000/health
+# Gateway health (includes a vLLM readiness probe)
+curl http://localhost:8080/health
 
-# List available models
-curl http://localhost:8000/v1/models
+# Models advertised from configs/models.yaml
+curl http://localhost:8080/v1/models
 
 # Run a completion
-curl http://localhost:8000/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "meta/llama3-70b-instruct",
+    "model": "llama3-8b",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
+
+---
+
+## Configuration
+
+Environment variables are read at process start (`python-dotenv` does not override anything already exported), and `configs/models.yaml` is the only YAML file loaded by application code — it populates `GET /v1/models`. There is no `SERVING_BACKEND` selector: the gateway always calls vLLM. See [docs/configuration.md](docs/configuration.md).
 
 ---
 
