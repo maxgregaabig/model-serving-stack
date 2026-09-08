@@ -192,15 +192,17 @@ model-serving-stack/
 
 ## Benchmark Results (Baseline — 2026-06-09)
 
-All benchmarks run against `meta/llama3-8b-instruct` on a single A10G GPU.
+Run against `meta/llama3-8b-instruct` on a single NVIDIA A10G (24GB), 500 requests at concurrency 32, 128 prompt tokens and 256 output tokens on average.
 
-| Backend | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Concurrency |
-|---------|--------------|--------------|-------------------|-------------|
-| vLLM (PagedAttention) | 142 | 387 | 1,840 | 32 |
-| Triton TRT-LLM | 98 | 241 | 2,310 | 32 |
-| Ray Serve (vLLM backend) | 156 | 412 | 1,780 | 32 |
+| Backend | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Req/s | Concurrency |
+|---------|--------------|--------------|-------------------|-------|-------------|
+| vLLM (PagedAttention) | 142 | 387 | 1,840 | 28.4 | 32 |
+| Triton TRT-LLM | 98 | 241 | 2,310 | 35.7 | 32 |
+| Ray Serve (vLLM backend) | 156 | 412 | 1,780 | 27.5 | 32 |
 
-> **Key takeaway:** TRT-LLM via Triton delivers ~25% lower TTFT vs. native vLLM at equivalent concurrency. vLLM's PagedAttention advantage shows at higher concurrency (64+). See `results/baseline_bench_2026-06.json` for raw data.
+> **Key takeaway:** Triton delivers ~31% lower TTFT p50 than native vLLM at this concurrency (142 ms -> 98 ms). The recorded findings note that vLLM's PagedAttention advantage becomes dominant at concurrency >= 64.
+
+Raw data: [`results/baseline_bench_2026-06.json`](results/baseline_bench_2026-06.json). **These numbers are not currently reproducible from the repo** — the artifact records no commit SHA, command, or backend versions. Rerun commands and the full provenance gap are documented in [docs/benchmarks.md](docs/benchmarks.md).
 
 ---
 
