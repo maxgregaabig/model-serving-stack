@@ -1,30 +1,30 @@
 # Architecture — model-serving-stack
 
-This document describes the design decisions, component interactions, and operational patterns for the model-serving-stack.
+This document describes the design decisions, component interactions, and
+operational patterns for the model-serving-stack.
 
 ## System Overview
 
 ```mermaid
 flowchart TD
     Client(["Client / Application"])
-    GW["FastAPI Gateway\n(OpenAI-compatible)\napi/openai_server.py"]
-    MW["StructuredLoggingMiddleware\n(request IDs, latency, tokens)"]
-    Router{"Backend Router\n(SERVING_BACKEND env)"}
+    GW["FastAPI Gateway<br/>OpenAI-compatible, :8080<br/>api/main.py"]
+    MW["StructuredLoggingMiddleware<br/>request IDs, latency, status"]
 
     subgraph Backends ["Inference Backends"]
-        VLLM["vLLM\n(PagedAttention)\nvllm/"]
-        Triton["Triton Inference Server\n(TRT-LLM / ONNX)\ntriton/"]
-        Ray["Ray Serve\n(autoscaling)\nray_serve/"]
+        VLLM["vLLM<br/>PagedAttention<br/>vllm/"]
+        Triton["Triton Inference Server<br/>Python backend<br/>triton/"]
+        Ray["Ray Serve<br/>autoscaling<br/>ray_serve/"]
     end
 
     subgraph Packaging ["Model Packaging"]
-        BentoML["BentoML\nbentoml/"]
+        BentoML["BentoML<br/>bentoml/"]
     end
 
     subgraph Autoscaling ["GPU Autoscaling"]
-        DCGM["DCGM Exporter\nDaemonSet"]
+        DCGM["DCGM Exporter<br/>DaemonSet"]
         PromAdapter["Prometheus Adapter"]
-        HPA["Kubernetes HPA\nDCGM_FI_DEV_GPU_UTIL >= 70%"]
+        HPA["Kubernetes HPA<br/>DCGM_FI_DEV_GPU_UTIL target 70"]
     end
 
     subgraph Observability ["Observability"]
@@ -34,20 +34,23 @@ flowchart TD
 
     Client --> GW
     GW --> MW
-    MW --> Router
-    Router -->|"SERVING_BACKEND=vllm"| VLLM
-    Router -->|"SERVING_BACKEND=triton"| Triton
-    Router -->|"SERVING_BACKEND=ray"| Ray
-    BentoML -->|"packaged model"| VLLM
-    BentoML -->|"packaged model"| Triton
+    MW -->|"vllm/client.py"| VLLM
+    Client -->|"triton/client.py"| Triton
+    Client -->|"serve run"| Ray
+    Ray -->|"vllm/client.py"| VLLM
+    BentoML -->|"vllm/client.py"| VLLM
     DCGM -->|"DCGM_FI_DEV_GPU_UTIL"| Prom
     Prom --> PromAdapter
     PromAdapter --> HPA
     HPA -->|"scale replicas"| VLLM
-    HPA -->|"scale replicas"| Ray
+    Prom -->|"scrapes :8000 / :8002"| VLLM
     Prom --> Graf
-    GW -->|"structured logs"| Prom
 ```
+
+The gateway has exactly one backend: `api/main.py` constructs a `VLLMClient` at
+import time and every chat completion goes to vLLM. Triton and Ray Serve are
+first-class parts of the stack but are addressed directly, not through the
+gateway. See [configuration.md](configuration.md#there-is-no-backend-selector).
 
 ## Design Decisions
 
@@ -55,47 +58,77 @@ flowchart TD
 
 Each backend serves a different operational profile:
 
-- **vLLM** — best for dynamic batching at high concurrency (64+). PagedAttention prevents KV cache fragmentation. Default for general LLM serving.
-- **Triton + TRT-LLM** — best for latency-critical applications. TRT-LLM compiles models to engine files optimized for the specific GPU, achieving ~25–30% lower TTFT at moderate concurrency. Required for Triton's multi-model serving capability.
-- **Ray Serve** — best for multi-model scenarios requiring programmatic autoscaling policies and Python-level request preprocessing. Adds ~10% overhead vs native vLLM but provides richer deployment control.
+- **vLLM** — best for dynamic batching at high concurrency. PagedAttention
+  prevents KV cache fragmentation. It is the default and the only backend the
+  gateway calls.
+- **Triton** — best for latency-critical serving and multi-model hosting. In the
+  committed baseline it showed ~31% lower TTFT p50 than native vLLM at
+  concurrency 32 (142 ms -> 98 ms); see [benchmarks.md](benchmarks.md) for the
+  caveats on that measurement. The model repository here uses Triton's Python
+  backend wrapping a vLLM `AsyncLLMEngine`, which is the flexible path; a
+  TRT-LLM engine would be compiled per GPU and swapped in behind the same
+  `config.pbtxt` contract.
+- **Ray Serve** — best when you need programmatic autoscaling policies, Python
+  request preprocessing, or multi-model routing (see
+  `ray_serve/multi_model_router.py`). The baseline recorded ~10% overhead versus
+  native vLLM from actor scheduling.
 
-The `SERVING_BACKEND` env var allows switching backends without code changes.
+Switching the gateway's backend currently requires a code change in
+`api/main.py`; there is no environment-variable selector.
 
 ### Why DCGM for autoscaling instead of CPU/memory HPA?
 
-LLM inference is GPU-bound, not CPU/memory-bound. Standard Kubernetes HPA on CPU utilization would trigger far too late (GPU saturated, CPU still low) or far too early (GPU idle, CPU busy with Python overhead). DCGM's `DCGM_FI_DEV_GPU_UTIL` metric directly measures the GPU execution engine utilization, making it the correct autoscaling signal for LLM workloads.
+LLM inference is GPU-bound, not CPU/memory-bound. A standard HPA on CPU
+utilization triggers far too late (GPU saturated, CPU still low) or far too
+early (GPU idle, CPU busy with Python overhead). GPU memory is no better as a
+signal because vLLM pre-allocates its KV cache to `gpu_memory_utilization`, so
+usage barely moves with load. `DCGM_FI_DEV_GPU_UTIL` measures GPU execution
+engine utilization directly, which tracks real serving pressure.
 
-The HPA target of 70% provides a buffer for request spikes before GPU saturation causes queuing latency increases.
+The 70% target provides a buffer for request spikes before saturation turns into
+queuing latency. Full rationale, dependencies, and tuning: [autoscaling.md](autoscaling.md).
 
 ### Why StructuredLoggingMiddleware at the gateway level?
 
-Centralizing request logging at the gateway (vs. inside each backend) means:
-1. Every request gets a correlation `request_id` regardless of backend
-2. TTFT and total latency are measured from the client's perspective, not the backend's internal view
-3. Token counts are captured once, not duplicated across backends
-4. Failed requests (before reaching the backend) are still logged
+Centralizing request logging at the gateway (rather than inside each backend)
+means:
 
-See `api/middleware.py` for the implementation.
+1. Every request gets a correlation `request_id`, returned as `X-Request-ID`.
+2. Latency is measured from the client's perspective, not the backend's internal
+   view.
+3. Requests that fail before reaching a backend are still logged.
+
+`/health` and `/metrics` are excluded from this logging so probes do not flood
+the log. The middleware also stamps `X-Backend: vllm` on responses. It is
+implemented in `api/main.py`; logs are emitted as `logging` records on the
+`api.access` logger with structured `extra` fields, not exported to Prometheus.
 
 ## Triton Model Repository Structure
 
 ```
 triton/model_repository/
-└── llama3_trtllm/
-    ├── config.pbtxt         # model name, backend, max_batch_size, input/output tensors
+└── llama3/
+    ├── config.pbtxt         # model name, backend, transaction policy, tensors
     └── 1/
-        └── model.py         # Python backend — wraps TRT-LLM engine or NIM client
+        └── model.py         # Python backend wrapping a vLLM AsyncLLMEngine
 ```
 
-The `config.pbtxt` specifies:
-- `backend: "python"` — uses the Python backend for maximum flexibility
-- `max_batch_size: 8` — static batch size tuned for A10G memory
-- Input tensor: `TEXT_INPUT` (TYPE_STRING)
-- Output tensor: `TEXT_OUTPUT` (TYPE_STRING)
+`config.pbtxt` specifies:
+
+- `name: "llama3"`, `backend: "python"`
+- `max_batch_size: 0` — batching is handled by the vLLM engine inside the model,
+  not by Triton's dynamic batcher
+- `model_transaction_policy { decoupled: true }` — allows streaming/decoupled
+  responses
+- Inputs: `text_input` (`TYPE_STRING`), optional `max_tokens` (`TYPE_INT32`),
+  optional `temperature` (`TYPE_FP32`)
+- Output: `text_output` (`TYPE_STRING`)
+- `instance_group`: one `KIND_GPU` instance on GPU 0
 
 ## DCGM HPA Configuration
 
-The HPA in `autoscaling/hpa.yaml` uses an external metric sourced from the DCGM Prometheus Exporter:
+`kubernetes/hpa-dcgm.yaml` is the canonical HPA. It uses an external metric
+sourced from the DCGM Prometheus Exporter:
 
 ```yaml
 metrics:
@@ -111,22 +144,38 @@ metrics:
         averageValue: "70"
 ```
 
-This requires the [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to bridge DCGM metrics from Prometheus into the Kubernetes custom metrics API.
+It also sets scaling `behavior`: a 60-second scale-up stabilization window at
+one pod per minute, and a 300-second scale-down window at one pod per two
+minutes. This requires the
+[Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to
+bridge DCGM metrics from Prometheus into the Kubernetes external metrics API.
 
-## Request Flow (vLLM backend)
+## Request Flow (gateway path)
 
-1. Client sends `POST /v1/chat/completions` to the FastAPI gateway
-2. `StructuredLoggingMiddleware` assigns a `request_id`, records start time
-3. Gateway routes to vLLM backend based on `SERVING_BACKEND=vllm`
-4. vLLM processes the request with PagedAttention KV cache management
-5. Response streams back to the client (SSE for streaming mode)
-6. Middleware logs TTFT, total latency, input/output token counts to stdout (structured JSON)
-7. Prometheus scrapes the `/metrics` endpoint for Grafana visualization
+1. Client sends `POST /v1/chat/completions` to the FastAPI gateway on port 8080.
+2. `StructuredLoggingMiddleware` assigns a `request_id` and records the start
+   time.
+3. The handler validates the body against the Pydantic schemas in
+   `api/models.py`.
+4. `VLLMClient.chat()` forwards the messages to the vLLM OpenAI-compatible
+   server (`VLLM_HOST`/`VLLM_PORT`) using the `openai` SDK.
+5. vLLM processes the request with PagedAttention KV cache management.
+6. The gateway returns a complete `chat.completion` response. Streaming (SSE) is
+   not implemented on this path; the request schema has no `stream` field.
+7. The middleware logs method, path, status, latency, client IP and user agent,
+   and sets `X-Request-ID` and `X-Backend` on the response.
+
+Prometheus scrapes the backends directly — `vllm-server:8000` and
+`triton-server:8002` per `monitoring/prometheus/prometheus.yml`. The gateway
+itself does not currently expose a `/metrics` endpoint.
 
 ## Related Repos
 
-| Repo | Integration Point |
+Sibling reference projects by the same author; they are independent
+repositories, not runtime dependencies of this one.
+
+| Repo | Relationship |
 |------|------------------|
-| [`llm-finetuning-lab`](https://github.com/TylrDn/llm-finetuning-lab) | Fine-tuned GGUF/merged model weights are served here |
-| [`inference-optimization-bench`](https://github.com/TylrDn/inference-optimization-bench) | Benchmark results guide backend selection and config tuning |
-| [`nvidia-nim-agent-toolkit`](https://github.com/TylrDn/nvidia-nim-agent-toolkit) | Agentic workflows route LLM calls to this serving stack |
+| [`llm-finetuning-lab`](https://github.com/TylrDn/llm-finetuning-lab) | LoRA/QLoRA fine-tuning pipeline producing weights a stack like this serves |
+| [`inference-optimization-bench`](https://github.com/TylrDn/inference-optimization-bench) | Quantization and inference benchmarking that informs backend selection |
+| [`nvidia-nim-agent-toolkit`](https://github.com/TylrDn/nvidia-nim-agent-toolkit) | Agent toolkit over NVIDIA NIM — the client side of a serving stack |
