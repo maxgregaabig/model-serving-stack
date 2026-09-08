@@ -159,19 +159,31 @@ The HPA scales the `vllm-server` Deployment between 1 and 4 replicas on the DCGM
 
 ---
 
-## Benchmark Results (Baseline — 2026-06-09)
+## Benchmarks
 
-Run against `meta/llama3-8b-instruct` on a single NVIDIA A10G (24GB), 500 requests at concurrency 32, 128 prompt tokens and 256 output tokens on average.
+**This project publishes no performance numbers.** It has a benchmark harness;
+it does not yet have a benchmark result.
 
-| Backend | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Req/s | Concurrency |
-|---------|--------------|--------------|-------------------|-------|-------------|
-| vLLM (PagedAttention) | 142 | 387 | 1,840 | 28.4 | 32 |
-| Triton TRT-LLM | 98 | 241 | 2,310 | 35.7 | 32 |
-| Ray Serve (vLLM backend) | 156 | 412 | 1,780 | 27.5 | 32 |
+The former baseline (`baseline_bench_2026-06.json`, vLLM vs Triton TRT-LLM vs
+Ray Serve on an A10G) recorded no commit SHA, no command and no backend
+versions, and no committed tool emitted its schema. It could not be reproduced
+or checked, so it has been moved to
+[`results/unverified/`](results/unverified/README.md) and is quoted nowhere. It
+is kept for history, not offered as evidence.
 
-> **Key takeaway:** Triton delivers ~31% lower TTFT p50 than native vLLM at this concurrency (142 ms -> 98 ms). The recorded findings note that vLLM's PagedAttention advantage becomes dominant at concurrency >= 64.
+What exists instead is `python -m evals.bench_report`, which measures
+time-to-first-token from a streamed response across one or more named backends,
+captures provenance from the running machine — commit SHA, the exact
+invocation, package and CUDA driver versions, detected GPU — and **refuses to
+write a report missing any of it**. Its `key_findings` are derived from the
+measurements rather than written by hand, so a percentage cannot contradict the
+numbers beside it. `tests/test_bench_report.py` enforces both properties, and
+asserts that every file in `results/` satisfies the schema in
+[`results/README.md`](results/README.md).
 
-Raw data: [`results/baseline_bench_2026-06.json`](results/baseline_bench_2026-06.json). **These numbers are not currently reproducible from the repo** — the artifact records no commit SHA, command, or backend versions. Rerun commands and the full provenance gap are documented in [docs/benchmarks.md](docs/benchmarks.md).
+Producing a real baseline needs a GPU host; the command is in
+[`results/unverified/README.md`](results/unverified/README.md). See
+[docs/benchmarks.md](docs/benchmarks.md) for the harnesses and how to run them.
 
 ---
 
@@ -241,7 +253,7 @@ model-serving-stack/
 │   └── load_test.py              # CLI wrapper that writes a JSON report
 ├── results/                      # Committed benchmark artifacts + schema
 │   ├── README.md
-│   └── baseline_bench_2026-06.json
+│   └── unverified/            # results that lack provenance; not evidence
 ├── tests/                        # pytest suite (6 modules, mock-based)
 ├── docs/                         # architecture, configuration, benchmarks, autoscaling, testing
 ├── deploy/                       # Dockerfile + Compose stack with the gateway

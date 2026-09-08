@@ -8,10 +8,24 @@ file here should not be quoted anywhere in the repo.
 
 | File | Description |
 |------|-------------|
-| `baseline_bench_2026-06.json` | 2026-06-09 baseline comparing vLLM, Triton TRT-LLM, and Ray Serve on a single A10G. Missing the provenance fields below — see the reproducibility note in `docs/benchmarks.md`. |
+| _(none)_ | No reproducible benchmark has been committed yet. |
+
+`results/unverified/` holds results that lack the provenance below. They are
+**not** evidence and are quoted nowhere — see
+[`unverified/README.md`](unverified/README.md).
 
 `results/load_tests/` is git-ignored; it is the default `--output-dir` for
 `python -m evals.load_test` and holds unreviewed local runs.
+
+## Producing a result
+
+`python -m evals.bench_report` emits this schema with provenance read from the
+running machine, and refuses to write a report that is missing any required
+field. See [`../docs/benchmarks.md`](../docs/benchmarks.md).
+
+`tests/test_bench_report.py::TestCommittedResults` validates every `*.json` in
+this directory against the rules below, so a result that cannot be reproduced
+cannot land here unnoticed.
 
 ## Required schema for new runs
 

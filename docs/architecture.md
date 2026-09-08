@@ -61,10 +61,10 @@ Each backend serves a different operational profile:
 - **vLLM** — best for dynamic batching at high concurrency. PagedAttention
   prevents KV cache fragmentation. It is the default and the only backend the
   gateway calls.
-- **Triton** — best for latency-critical serving and multi-model hosting. In the
-  committed baseline it showed ~31% lower TTFT p50 than native vLLM at
-  concurrency 32 (142 ms -> 98 ms); see [benchmarks.md](benchmarks.md) for the
-  caveats on that measurement. The model repository here uses Triton's Python
+- **Triton** — best for latency-critical serving and multi-model hosting. This
+  repository makes no measured claim about how it compares to vLLM here; the
+  benchmark that once supported one was not reproducible and has been retired
+  (see [benchmarks.md](benchmarks.md)). The model repository here uses Triton's Python
   backend wrapping a vLLM `AsyncLLMEngine`, which is the flexible path; a
   TRT-LLM engine would be compiled per GPU and swapped in behind the same
   `config.pbtxt` contract.
