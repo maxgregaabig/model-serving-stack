@@ -66,6 +66,24 @@ open htmlcov/index.html
 python -m evals.load_test --requests 500 --concurrency 32 --output-dir results/load_tests
 ```
 
+See [docs/testing.md](docs/testing.md) for the coverage map and the `gpu` marker convention.
+
+## Release Process
+
+1. Bump `version` in `pyproject.toml` following [SemVer](https://semver.org/spec/v2.0.0.html).
+2. Move the `## [Unreleased]` entries in `CHANGELOG.md` under a new
+   `## [X.Y.Z] - YYYY-MM-DD` heading and leave a fresh empty `## [Unreleased]`
+   section.
+3. Commit with `chore(release): vX.Y.Z` and confirm CI is green on `main`.
+4. Tag and push:
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin main --follow-tags
+   ```
+5. If the release changes benchmark numbers, commit the new artifact under
+   `results/` using the schema in [results/README.md](results/README.md) and
+   update the README table in the same commit.
+
 ## Questions
 
 Open an issue on [this repository](https://github.com/TylrDn/model-serving-stack/issues).
