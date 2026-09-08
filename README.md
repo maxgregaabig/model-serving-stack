@@ -209,25 +209,27 @@ Raw data: [`results/baseline_bench_2026-06.json`](results/baseline_bench_2026-06
 ## Kubernetes Deployment
 
 ```bash
-# Apply DCGM exporter (DaemonSet)
-kubectl apply -f autoscaling/dcgm-exporter.yaml
+# DCGM exporter DaemonSet (namespace: monitoring)
+kubectl apply -f kubernetes/dcgm-exporter.yaml
 
-# Apply HPA (targets DCGM_FI_DEV_GPU_UTIL >= 70%)
-kubectl apply -f autoscaling/hpa.yaml
+# Serving workloads (Deployment + Service in each file)
+kubectl apply -f kubernetes/vllm-deployment.yaml
+kubectl apply -f kubernetes/triton-deployment.yaml
 
-# Deploy vLLM serving pods
-kubectl apply -f kubernetes/deployment.yaml
-kubectl apply -f kubernetes/service.yaml
+# HPA on DCGM_FI_DEV_GPU_UTIL, AverageValue target 70
+kubectl apply -f kubernetes/hpa-dcgm.yaml
 
-# Verify HPA status
-kubectl get hpa -n model-serving
+# Optional NGINX ingress for /vllm and /triton
+kubectl apply -f kubernetes/ingress.yaml
+
+kubectl get hpa vllm-gpu-hpa
 ```
 
-The HPA scales vLLM replicas when `DCGM_FI_DEV_GPU_UTIL` exceeds 70%, using the NVIDIA DCGM Exporter metric exposed to the Kubernetes metrics server via Prometheus Adapter.
+The HPA scales the `vllm-server` Deployment between 1 and 4 replicas on the DCGM Exporter's `DCGM_FI_DEV_GPU_UTIL` metric. It requires [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to expose that metric through the Kubernetes external metrics API. Rationale and tuning guidance: [docs/autoscaling.md](docs/autoscaling.md).
 
 ---
 
-## Development
+## Testing
 
 ```bash
 # Install dev dependencies
