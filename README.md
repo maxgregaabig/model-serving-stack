@@ -140,42 +140,52 @@ Environment variables are read at process start (`python-dotenv` does not overri
 
 ```
 model-serving-stack/
-├── api/                    # OpenAI-compatible FastAPI gateway
-│   ├── openai_server.py    # /v1/chat/completions, /v1/models, /health
-│   └── middleware.py       # StructuredLoggingMiddleware + request IDs
-├── triton/                 # Triton model repository + config
-│   ├── model_repository/   # model.py Python backend + config.pbtxt
-│   └── client.py           # Triton gRPC/HTTP client wrapper
-├── vllm/                   # vLLM server configuration
-│   ├── vllm_config.yaml    # Tensor parallelism, KV cache, max seqlen
-│   └── launch.sh           # vLLM entrypoint with env substitution
-├── ray_serve/              # Ray Serve deployment
-│   ├── deployment.py       # @serve.deployment with autoscaling config
-│   └── router.py           # Multi-model routing logic
-├── bentoml/                # BentoML packaging
-│   └── service.py          # Bentofile + service definition
-├── autoscaling/            # Kubernetes HPA manifests
-│   ├── dcgm-exporter.yaml  # DCGM DaemonSet for GPU metrics
-│   └── hpa.yaml            # HPA: DCGM_FI_DEV_GPU_UTIL target 70%
-├── kubernetes/             # K8s deployment manifests
-│   ├── deployment.yaml     # vLLM/Triton Deployment + resource limits
-│   └── service.yaml        # ClusterIP + LoadBalancer service
-├── monitoring/             # Observability stack
-│   ├── prometheus.yaml     # Prometheus config + scrape targets
-│   └── grafana-dashboard.json  # Pre-built GPU + serving metrics dashboard
-├── configs/                # Model and serving configs
-│   └── models.yaml         # Model registry: name, backend, path
-├── evals/                  # Benchmark harnesses
-│   └── load_test.py        # Locust load test + TTFT/throughput capture
-├── results/                # Committed benchmark results
-│   └── baseline_bench_2026-06.json  # TTFT, throughput, p99 latency
-├── tests/                  # Unit + integration tests
-├── docs/                   # Architecture docs
-│   └── architecture.md     # Extended Mermaid diagram + design decisions
-├── docker-compose.yml      # Root: vLLM + Triton + monitoring + DCGM
-├── .env.template           # All required env vars documented
-├── pyproject.toml          # ruff + mypy + pytest config
-└── requirements.txt        # Pinned Python 3.11 dependencies
+├── api/                          # OpenAI-compatible FastAPI gateway (port 8080)
+│   ├── main.py                   # /v1/chat/completions, /v1/models, /health, StructuredLoggingMiddleware
+│   └── models.py                 # Pydantic request/response schemas
+├── vllm/                         # vLLM runtime
+│   ├── server.py                 # Launches vllm.entrypoints.openai.api_server from env vars
+│   ├── openai_server.py          # In-process FastAPI server over AsyncLLMEngine
+│   ├── client.py                 # VLLMClient used by the gateway, Ray Serve and BentoML
+│   ├── client_test.py            # Standalone load-test script (not a pytest module)
+│   └── batching_config.yaml      # Continuous-batching reference values
+├── triton/                       # Triton Inference Server
+│   ├── client.py                 # HTTP/gRPC client wrapper
+│   ├── perf_analyzer.sh          # perf_analyzer benchmark script
+│   └── model_repository/llama3/  # config.pbtxt + 1/model.py (Python backend)
+├── ray_serve/                    # Ray Serve
+│   ├── deployment.py             # @serve.deployment with AutoscalingConfig
+│   ├── multi_model_router.py     # Weighted traffic split across models
+│   └── autoscaling_config.yaml   # Autoscaling reference values
+├── bentoml/                      # BentoML packaging
+│   ├── service.py                # Service + runner definition
+│   ├── bentofile.yaml            # Build manifest
+│   └── build_and_push.sh         # Build and push helper
+├── kubernetes/                   # K8s manifests
+│   ├── vllm-deployment.yaml      # Deployment + Service (nvidia.com/gpu: 1)
+│   ├── triton-deployment.yaml    # Deployment + Service (HTTP/gRPC/metrics)
+│   ├── dcgm-exporter.yaml        # DCGM Exporter DaemonSet
+│   ├── hpa-dcgm.yaml             # HPA on DCGM_FI_DEV_GPU_UTIL (canonical)
+│   └── ingress.yaml              # NGINX ingress for /vllm and /triton
+├── monitoring/
+│   ├── prometheus/prometheus.yml # Scrape configs (DCGM, vLLM, Triton)
+│   └── grafana/gpu_serving_dashboard.json
+├── configs/
+│   ├── models.yaml               # Model registry read by the gateway
+│   └── serving.yaml              # Reference backend settings
+├── evals/
+│   ├── benchmark.py              # Async latency/throughput harness
+│   └── load_test.py              # CLI wrapper that writes a JSON report
+├── results/                      # Committed benchmark artifacts + schema
+│   ├── README.md
+│   └── baseline_bench_2026-06.json
+├── tests/                        # pytest suite (6 modules, mock-based)
+├── docs/                         # architecture, configuration, benchmarks, autoscaling, testing
+├── deploy/                       # Dockerfile + Compose stack with the gateway
+├── notebooks/serving_demo.ipynb
+├── docker-compose.yml            # Root: Triton + vLLM + Prometheus + Grafana
+├── pyproject.toml                # ruff, mypy, pytest, coverage config
+└── requirements.txt
 ```
 
 ---
