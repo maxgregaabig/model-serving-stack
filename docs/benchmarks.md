@@ -1,64 +1,72 @@
 # Benchmarks
 
-The one committed benchmark artifact is
-[`results/baseline_bench_2026-06.json`](../results/baseline_bench_2026-06.json).
-Everything below either comes from that file or describes how to run the
-harnesses in `evals/`.
+**This repository publishes no benchmark numbers.** It has harnesses; it does
+not yet have a result that can be reproduced.
 
-## Committed baseline (2026-06-09)
+## The retired baseline
 
-From the JSON's top-level fields:
-
-| Field | Value |
-|-------|-------|
-| `benchmark_date` | `2026-06-09` |
-| `model` | `meta/llama3-8b-instruct` |
-| `hardware` | NVIDIA A10G (24GB), 8 vCPU, 32GB RAM |
-| `concurrency` | 32 |
-| `request_count` | 500 |
-| `prompt_tokens_avg` | 128 |
-| `output_tokens_avg` | 256 |
-
-Per-backend results:
-
-| Backend (JSON key) | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Req/s | Error rate | Avg GPU util |
-|---|---|---|---|---|---|---|
-| `vllm_paged_attention` | 142 | 387 | 1840 | 28.4 | 0.0% | 87% |
-| `triton_trt_llm` | 98 | 241 | 2310 | 35.7 | 0.0% | 91% |
-| `ray_serve_vllm_backend` | 156 | 412 | 1780 | 27.5 | 0.0% | 85% |
-
-Recorded `key_findings`:
-
-- TRT-LLM via Triton delivers ~31% lower TTFT p50 than vLLM at concurrency 32
-  (142 ms -> 98 ms).
-- vLLM's PagedAttention advantage becomes dominant at concurrency >= 64 due to
-  memory efficiency.
-- Ray Serve adds ~10% overhead versus native vLLM from actor scheduling.
-- The DCGM-driven HPA triggered scale-out at 70% GPU utilization and stayed
-  stable under sustained load.
-
-## Reproducibility gap
-
-**These numbers cannot currently be reproduced from the repository alone.** The
-committed JSON records results but not the conditions that produced them, and no
-script in this repo emits that schema. Specifically:
+`baseline_bench_2026-06.json` compared vLLM, Triton TRT-LLM and Ray Serve on a
+single A10G. It has been moved to
+[`results/unverified/`](../results/unverified/README.md) and is quoted nowhere
+in this repository, because it fails rule 1 of
+[`results/README.md`](../results/README.md) — "A result without `git_sha`,
+`command`, and `software_versions` is not reproducible and should not be
+committed". Specifically it recorded:
 
 - **No `git_sha`** — the code state that produced the run is unknown.
 - **No `command`** — the exact invocation, including flags, is unknown.
 - **No `software_versions`** — vLLM, TensorRT-LLM, Triton, CUDA driver and
   container image tags are all unrecorded. `requirements.txt` pins only lower
-  bounds (`vllm>=0.4.0`, `tritonclient[all]>=2.44.0`, `ray[serve]>=2.10.0`), so it
-  does not identify the versions used.
-- **No raw output path** — only the aggregated summary is committed.
-- **Schema mismatch with the harnesses** — the JSON reports per-backend TTFT
-  percentiles and token throughput. `evals/benchmark.py` measures end-to-end
-  request latency (avg, p99) and requests/sec, not TTFT or tokens/sec, and
-  `triton/perf_analyzer.sh` emits `perf_analyzer` output in its own format. No
-  committed tool produces this file.
+  bounds (`vllm>=0.4.0`, `tritonclient[all]>=2.44.0`, `ray[serve]>=2.10.0`), so
+  it does not identify the versions used.
+- **No raw output** — only the aggregated summary, so nothing can be recomputed.
+- **No tool that emits its schema** — `evals/benchmark.py` measured end-to-end
+  request latency, not TTFT or tokens/sec.
 
-Treat the table above as a recorded historical measurement, not a verified
-claim. Any future run should be written with the metadata schema in
-[`results/README.md`](../results/README.md) so it is reproducible.
+The numbers are not restated here. Restating an unreproducible measurement in a
+document that explains why it is unreproducible is how such numbers end up
+quoted anyway.
+
+## The replacement harness
+
+`evals/bench_report.py` emits the schema in
+[`results/README.md`](../results/README.md), with provenance:
+
+```bash
+python -m evals.bench_report \
+    --backend vllm_paged_attention=http://localhost:8080/v1/chat/completions \
+    --backend triton_trt_llm=http://localhost:8081/v1/chat/completions \
+    --model meta/llama3-8b-instruct \
+    --requests 500 --concurrency 32 \
+    --output results/baseline_bench_2026-09.json
+```
+
+What it does that the earlier tooling did not:
+
+| Property | `evals/benchmark.py` | `evals/bench_report.py` |
+|---|---|---|
+| Metric | total request latency | **time to first token**, from a streamed response |
+| Backends per run | one endpoint | **one or more named backends**, compared under one workload |
+| Provenance | none | commit SHA (with `-dirty` when the tree is), the exact quoted command, package versions, CUDA driver, detected GPU |
+| Missing provenance | n/a | **refuses to write the report** |
+| Raw output | not written | per-request JSONL under `raw_output_path` |
+| `key_findings` | n/a | derived from the measurements; a hand-written percentage that disagrees with its own numbers is rejected |
+| p99 | `sorted[int(0.99*n)]`, which returns the maximum for n=100 | linear-interpolated percentile |
+
+Fields it will not invent: `gpu_util_avg_pct` is written as `null` unless read
+from DCGM or `nvidia-smi` during the run, and `--prompt-tokens-avg` defaults to
+0 rather than guessing a tokenizer's count. `hardware` is detected from
+`nvidia-smi`; on a host without a GPU the run records that it "did not measure
+GPU serving" and, absent `--hardware`, refuses to write at all.
+
+`tests/test_bench_report.py` covers this, including a test that every JSON in
+`results/` satisfies the schema — so an unreproducible result cannot be
+committed there unnoticed.
+
+## Status
+
+No baseline has been run on GPU hardware since the harness was written. Until
+one has, **no performance number from this repository is safe to quote.**
 
 ## Rerunning the harnesses
 

@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`results/baseline_bench_2026-06.json` is retired.** It recorded no
+  `git_sha`, no `command` and no `software_versions`, no committed tool emitted
+  its schema, and the raw output was never kept — so nothing in it could be
+  reproduced or checked. Under this repository's own rule
+  ("A result without `git_sha`, `command`, and `software_versions` is not
+  reproducible and should not be committed", `results/README.md`) it did not
+  belong in `results/`. It has moved to `results/unverified/`, which states
+  plainly that nothing there is evidence.
+- Every performance number that rested on it: the benchmark table and the
+  "~31% lower TTFT" takeaway in `README.md`, the per-backend table in
+  `docs/benchmarks.md`, and the Triton-versus-vLLM comparison in
+  `docs/architecture.md`. **This project now publishes no performance numbers.**
+  It has a harness; it does not yet have a result.
+
 ### Added
+
+- `evals/bench_report.py` — a benchmark harness that emits the schema
+  `results/README.md` defines. It measures **time to first token** from a
+  streamed response (the old harness measured total request latency), drives
+  **several named backends** in one run so a comparison comes from one workload,
+  and writes raw per-request records so aggregates can be recomputed.
+- `evals/provenance.py` — captures commit SHA (suffixed `-dirty` when the tree
+  is), the exact shell-quoted invocation, installed package versions, CUDA
+  driver and detected GPU. Values that cannot be observed are recorded as
+  `null` rather than guessed, and the harness **refuses to write a report**
+  whose provenance is incomplete.
+- `evals/report.py` — schema validation, plus an arithmetic check on
+  `key_findings`. `key_findings` are now derived from the measurements, so a
+  percentage cannot contradict the numbers beside it. This is the defect that
+  put "~25% lower TTFT" next to numbers giving 31%.
+- `tests/test_bench_report.py` — 35 tests, including one asserting that every
+  `*.json` in `results/` satisfies the schema, so an unreproducible result
+  cannot land there unnoticed.
+- `results/unverified/README.md` — what is in there, why, and the command that
+  would produce a real replacement.
+
+### Fixed
+
+- `percentile()` replaces `sorted[int(0.99 * n)]`, which returned the maximum
+  rather than the 99th percentile for n=100.
+- `--backend` without an `=` is now an argparse usage error rather than a
+  traceback raised partway through a run.
+
 
 - `LICENSE` — MIT, the license the README badge and link already claimed.
 - `docs/README.md` — documentation index.
