@@ -1,284 +1,682 @@
-# model-serving-stack
 
-> **Reference stack for serving LLMs on NVIDIA GPUs** — an OpenAI-compatible FastAPI gateway in front of vLLM, alongside Triton Inference Server and Ray Serve deployments, DCGM-driven Kubernetes autoscaling, Prometheus/Grafana observability, and a BentoML packaging path.
+# LLM Model Serving Stack
 
-[![CI](https://github.com/TylrDn/model-serving-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/TylrDn/model-serving-stack/actions)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+A reference implementation for serving large language models on NVIDIA GPUs using an OpenAI-compatible FastAPI gateway, vLLM, Triton Inference Server, Ray Serve, Kubernetes autoscaling, and Prometheus/Grafana monitoring.
 
----
+This project demonstrates how to build, benchmark, deploy, and monitor high-performance LLM inference infrastructure.
 
-Serving an LLM well is mostly an infrastructure problem: which runtime you pick changes latency by tens of percent, and the autoscaling signal you pick decides whether you scale before or after users feel it. This repo puts three common runtimes — vLLM, Triton Inference Server, and Ray Serve — behind one OpenAI-compatible API surface, alongside the Kubernetes, monitoring, and benchmarking pieces needed to compare and operate them. It is a reference implementation and a benchmarking harness, not a hosted service; every number quoted here comes from a committed artifact in [`results/`](results/).
+It is designed as a reference implementation and benchmarking environment, not a hosted production service.
+
+## Overview
+
+Serving large language models efficiently requires more than loading a model onto a GPU.
+
+Important considerations include:
+
+- Inference latency
+- Token throughput
+- GPU memory efficiency
+- Request batching
+- Concurrent execution
+- Model deployment
+- Autoscaling
+- Resource monitoring
+- Performance benchmarking
+
+This project integrates multiple serving technologies into one infrastructure reference.
+
+The stack includes:
+
+| Component | Purpose |
+|-----------|---------|
+| FastAPI | OpenAI-compatible inference gateway |
+| vLLM | High-throughput model inference |
+| Triton Inference Server | GPU inference serving |
+| Ray Serve | Distributed inference deployment |
+| BentoML | Model packaging |
+| Kubernetes | Container orchestration |
+| DCGM Exporter | GPU utilization metrics |
+| Prometheus | Metrics collection |
+| Grafana | Monitoring dashboards |
+
+The FastAPI gateway communicates directly with vLLM. Triton and Ray Serve operate as independently accessible deployments.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    Client(["Client / App"])
-    GW["FastAPI Gateway<br/>api/main.py<br/>(OpenAI-compatible, :8080)"]
+    A[Client Application] --> B[FastAPI Gateway]
+    B --> C[vLLM Inference Server]
 
-    subgraph Backends ["Inference Backends"]
-        VLLM["vLLM Server<br/>(PagedAttention)"]
-        Triton["Triton Inference Server<br/>(Python backend)"]
-        Ray["Ray Serve<br/>(autoscaling deployment)"]
-    end
+    D[Client Application] --> E[Triton Inference Server]
+    F[Client Application] --> G[Ray Serve]
+    G --> C
 
-    subgraph Autoscaling ["GPU Autoscaling"]
-        DCGM["DCGM Exporter<br/>(GPU metrics)"]
-        Adapter["Prometheus Adapter"]
-        HPA["Kubernetes HPA<br/>(DCGM_FI_DEV_GPU_UTIL)"]
-    end
-
-    subgraph Observability ["Observability"]
-        Prom["Prometheus"]
-        Graf["Grafana"]
-    end
-
-    Client --> GW
-    GW -->|"vllm/client.py"| VLLM
-    Client -->|"triton/client.py"| Triton
-    Client -->|"serve run"| Ray
-    Ray -->|"vllm/client.py"| VLLM
-    DCGM -->|"GPU utilization metrics"| Prom
-    Prom --> Adapter
-    Adapter --> HPA
-    HPA -->|"scale replicas"| VLLM
-    Prom --> Graf
+    H[DCGM GPU Exporter] --> I[Prometheus]
+    I --> J[Prometheus Adapter]
+    J --> K[Kubernetes HPA]
+    K --> C
+    I --> L[Grafana]
 ```
 
-The gateway itself calls vLLM only; Triton and Ray Serve are deployed and addressed independently. See [docs/configuration.md](docs/configuration.md#there-is-no-backend-selector).
+### Architecture Components
 
-## Stack Components
+**API Gateway**
 
-| Component | Role | Key Config |
-|-----------|------|------------|
-| **FastAPI Gateway** | OpenAI-compatible `/v1/chat/completions`, `/v1/models`, `/health` on port `8080` | `api/main.py` |
-| **vLLM** | High-throughput LLM inference with PagedAttention | `vllm/server.py`, `vllm/batching_config.yaml` |
-| **Triton Inference Server** | Model repository whose Python backend wraps a vLLM engine | `triton/model_repository/llama3/` |
-| **Ray Serve** | Autoscaling deployment and multi-model traffic split | `ray_serve/deployment.py`, `ray_serve/multi_model_router.py` |
-| **BentoML** | Portable model packaging | `bentoml/service.py`, `bentoml/bentofile.yaml` |
-| **DCGM Exporter + HPA** | GPU utilization metrics driving pod autoscaling | `kubernetes/dcgm-exporter.yaml`, `kubernetes/hpa-dcgm.yaml` |
-| **Prometheus + Grafana** | Scrape config and GPU serving dashboard | `monitoring/prometheus/prometheus.yml`, `monitoring/grafana/gpu_serving_dashboard.json` |
+Provides a standardized interface for model inference, health checks, and model discovery.
 
----
+**Inference Backends**
+
+Support multiple execution architectures for GPU-accelerated inference.
+
+**Autoscaling**
+
+Uses GPU utilization metrics to adjust serving capacity.
+
+**Observability**
+
+Collects performance metrics and supports infrastructure monitoring.
+
+## Features
+
+- OpenAI-compatible REST API
+- GPU-accelerated LLM inference
+- Continuous batching
+- PagedAttention support
+- Distributed serving reference
+- Multiple inference runtimes
+- Kubernetes deployment configurations
+- GPU-based horizontal autoscaling
+- Prometheus metrics
+- Grafana dashboards
+- Automated performance benchmarking
+- Model packaging
+- Containerized deployment
+- Mock-based testing
+- CI quality checks
+
+## Requirements
+
+### Hardware
+
+- NVIDIA GPU
+- Compatible NVIDIA driver
+- Sufficient GPU memory for the selected model
+
+### Software
+
+- Python 3.11+
+- Docker
+- Docker Compose
+- NVIDIA Container Toolkit
+- Kubernetes for cluster deployment
+
+Hardware requirements depend on model size, precision, and concurrency.
 
 ## Quick Start
 
-### 1. Prerequisites
+### 1. Configure the Environment
 
-- NVIDIA GPU and driver (the Compose services request `nvidia` GPU devices; `kubernetes/vllm-deployment.yaml` requests `nvidia.com/gpu: 1`)
-- Docker + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- Python 3.11+ (`requires-python = ">=3.11"`)
-
-### 2. Environment
+Create the environment file:
 
 ```bash
 cp .env.template .env
 ```
 
-The variables the code actually reads:
+Update the configuration for your GPU and selected model.
 
-| Variable | Default | Read by |
-|----------|---------|---------|
-| `MODEL_NAME` | `meta/llama3-8b-instruct` | `vllm/client.py`, `vllm/server.py` |
-| `VLLM_HOST` | `localhost` (client), `0.0.0.0` (server) | `vllm/client.py`, `vllm/server.py` |
-| `VLLM_PORT` | `8000` | `vllm/client.py`, `vllm/server.py` |
-| `TENSOR_PARALLEL_SIZE` | `1` | `vllm/server.py` |
-| `MAX_MODEL_LEN` | `8192` | `vllm/server.py` |
-| `VLLM_MODEL_NAME` | `meta-llama/Meta-Llama-3-8B-Instruct` | `vllm/openai_server.py`, root `docker-compose.yml` |
-| `VLLM_TENSOR_PARALLEL_SIZE` | `1` | `vllm/openai_server.py` |
-| `TRITON_HOST` / `TRITON_HTTP_PORT` / `TRITON_GRPC_PORT` | `localhost` / `8000` / `8001` | `triton/client.py` |
-| `PROMETHEUS_PORT` / `GRAFANA_PORT` | `9090` / `3000` | root `docker-compose.yml` |
-| `MODEL_PATH` / `HF_TOKEN` | — | `deploy/docker-compose.yml` |
+### 2. Environment Variables
 
-`.env.template` also ships `NGC_API_KEY`, `NVIDIA_API_KEY`, `TRITON_METRICS_PORT`, `RAY_ADDRESS`, `RAY_SERVE_PORT` and `LANGCHAIN_*`, which no module in this repo reads — they exist for the surrounding tooling. Full details, including YAML file ownership, are in [docs/configuration.md](docs/configuration.md).
+| Variable | Default |
+|----------|---------|
+| MODEL_NAME | meta/llama3-8b-instruct |
+| VLLM_HOST | localhost |
+| VLLM_PORT | 8000 |
+| TENSOR_PARALLEL_SIZE | 1 |
+| MAX_MODEL_LEN | 8192 |
+| VLLM_MODEL_NAME | meta-llama/Meta-Llama-3-8B-Instruct |
+| VLLM_TENSOR_PARALLEL_SIZE | 1 |
+| PROMETHEUS_PORT | 9090 |
+| GRAFANA_PORT | 3000 |
 
-### 3. Run
+Additional configuration includes:
+
+- TRITON_HOST
+- TRITON_HTTP_PORT
+- TRITON_GRPC_PORT
+- MODEL_PATH
+- HF_TOKEN
+- NGC_API_KEY
+- NVIDIA_API_KEY
+- RAY_ADDRESS
+- RAY_SERVE_PORT
+
+Not every variable is consumed directly by application code.
+
+Environment variables are loaded at process startup.
+
+## Running the Stack
+
+### Docker Deployment
+
+Start the FastAPI gateway, vLLM, Prometheus, and Grafana:
 
 ```bash
-# Gateway (:8080) + vLLM + Prometheus + Grafana
 docker compose -f deploy/docker-compose.yml up
+```
 
-# Or backends only: Triton (:8000/:8001/:8002), vLLM (:8010), Prometheus, Grafana
+Alternatively, start the root Compose services:
+
+```bash
 docker compose up
 ```
 
-Without Docker, run the pieces directly from the repository root:
+The root configuration includes:
+
+- Triton Inference Server
+- vLLM
+- Prometheus
+- Grafana
+
+### Manual Deployment
+
+Launch the vLLM server:
 
 ```bash
-python -m vllm.server                              # vLLM on :8000
-uvicorn api.main:app --host 0.0.0.0 --port 8080    # gateway on :8080
+python -m vllm.server
 ```
 
-### 4. Verify
+Start the FastAPI gateway:
 
 ```bash
-# Gateway health (includes a vLLM readiness probe)
-curl http://localhost:8080/health
-
-# Models advertised from configs/models.yaml
-curl http://localhost:8080/v1/models
-
-# Run a completion
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama3-8b",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
+uvicorn api.main:app --host 0.0.0.0 --port 8080
 ```
 
----
+### API Endpoints
 
-## Configuration
+The gateway exposes:
 
-Environment variables are read at process start (`python-dotenv` does not override anything already exported), and `configs/models.yaml` is the only YAML file loaded by application code — it populates `GET /v1/models`. There is no `SERVING_BACKEND` selector: the gateway always calls vLLM. See [docs/configuration.md](docs/configuration.md).
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Health and readiness check |
+| `/v1/models` | GET | Available model discovery |
+| `/v1/chat/completions` | POST | Chat inference |
 
----
+Example inference payload:
+
+```json
+{
+  "model": "llama3-8b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello!"
+    }
+  ]
+}
+```
+
+The gateway currently routes inference requests to vLLM only.
+
+There is no automatic backend selection in the gateway.
+
+## Inference Backends
+
+### vLLM
+
+vLLM provides high-throughput model serving with efficient GPU memory management.
+
+Capabilities include:
+
+- PagedAttention
+- Continuous batching
+- Efficient KV-cache management
+- Concurrent request processing
+- Tensor parallelism
+- OpenAI-compatible inference
+
+Primary implementation files:
+
+```text
+vllm/server.py
+vllm/openai_server.py
+vllm/client.py
+vllm/batching_config.yaml
+```
+
+### Triton Inference Server
+
+Triton provides model serving infrastructure for GPU-accelerated workloads.
+
+This implementation includes:
+
+- Python backend integration
+- Model repository configuration
+- HTTP and gRPC client support
+- Performance analysis tooling
+
+Important files:
+
+```text
+triton/client.py
+triton/perf_analyzer.sh
+triton/model_repository/llama3/
+```
+
+### Ray Serve
+
+Ray Serve supports distributed inference deployment and autoscaling.
+
+The implementation demonstrates:
+
+- Autoscaling configuration
+- Multiple model deployments
+- Weighted traffic distribution
+- Integration with vLLM
+
+Important files:
+
+```text
+ray_serve/deployment.py
+ray_serve/multi_model_router.py
+ray_serve/autoscaling_config.yaml
+```
+
+### BentoML
+
+BentoML provides a packaging path for portable model services.
+
+Files:
+
+```text
+bentoml/service.py
+bentoml/bentofile.yaml
+bentoml/build_and_push.sh
+```
 
 ## Kubernetes Deployment
 
+The project includes Kubernetes manifests for GPU inference infrastructure.
+
+### GPU Metrics Exporter
+
+Deploy DCGM Exporter:
+
 ```bash
-# DCGM exporter DaemonSet (namespace: monitoring)
 kubectl apply -f kubernetes/dcgm-exporter.yaml
+```
 
-# Serving workloads (Deployment + Service in each file)
+### Inference Deployments
+
+Deploy vLLM:
+
+```bash
 kubectl apply -f kubernetes/vllm-deployment.yaml
+```
+
+Deploy Triton:
+
+```bash
 kubectl apply -f kubernetes/triton-deployment.yaml
+```
 
-# HPA on DCGM_FI_DEV_GPU_UTIL, AverageValue target 70
+### GPU Autoscaling
+
+Enable horizontal pod autoscaling:
+
+```bash
 kubectl apply -f kubernetes/hpa-dcgm.yaml
+```
 
-# Optional NGINX ingress for /vllm and /triton
-kubectl apply -f kubernetes/ingress.yaml
+Verify the autoscaler:
 
+```bash
 kubectl get hpa vllm-gpu-hpa
 ```
 
-The HPA scales the `vllm-server` Deployment between 1 and 4 replicas on the DCGM Exporter's `DCGM_FI_DEV_GPU_UTIL` metric. It requires [Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter) to expose that metric through the Kubernetes external metrics API. Rationale and tuning guidance: [docs/autoscaling.md](docs/autoscaling.md).
+### Ingress
 
----
+Apply the optional NGINX ingress configuration:
 
-## Benchmark Results (Baseline — 2026-06-09)
+```bash
+kubectl apply -f kubernetes/ingress.yaml
+```
 
-Run against `meta/llama3-8b-instruct` on a single NVIDIA A10G (24GB), 500 requests at concurrency 32, 128 prompt tokens and 256 output tokens on average.
+### Autoscaling Configuration
 
-| Backend | TTFT p50 (ms) | TTFT p99 (ms) | Throughput (tok/s) | Req/s | Concurrency |
-|---------|--------------|--------------|-------------------|-------|-------------|
-| vLLM (PagedAttention) | 142 | 387 | 1,840 | 28.4 | 32 |
-| Triton TRT-LLM | 98 | 241 | 2,310 | 35.7 | 32 |
-| Ray Serve (vLLM backend) | 156 | 412 | 1,780 | 27.5 | 32 |
+The reference autoscaler uses:
 
-> **Key takeaway:** Triton delivers ~31% lower TTFT p50 than native vLLM at this concurrency (142 ms -> 98 ms). The recorded findings note that vLLM's PagedAttention advantage becomes dominant at concurrency >= 64.
+| Parameter | Value |
+|-----------|-------|
+| Deployment | vllm-server |
+| Minimum replicas | 1 |
+| Maximum replicas | 4 |
+| GPU metric | DCGM_FI_DEV_GPU_UTIL |
+| Target AverageValue | 70 |
 
-Raw data: [`results/baseline_bench_2026-06.json`](results/baseline_bench_2026-06.json). **These numbers are not currently reproducible from the repo** — the artifact records no commit SHA, command, or backend versions. Rerun commands and the full provenance gap are documented in [docs/benchmarks.md](docs/benchmarks.md).
+Prometheus Adapter is required to expose the GPU metric through the Kubernetes external metrics API.
 
----
+The autoscaler responds to GPU utilization rather than request count alone.
+
+## Monitoring and Observability
+
+### Prometheus
+
+Prometheus collects serving and infrastructure metrics.
+
+Tracked metrics can include:
+
+- GPU utilization
+- GPU memory usage
+- Inference latency
+- Request throughput
+- Token generation performance
+- Infrastructure resource consumption
+
+Configuration:
+
+```text
+monitoring/prometheus/prometheus.yml
+```
+
+### Grafana
+
+Grafana provides visualization dashboards for serving infrastructure.
+
+Dashboard configuration:
+
+```text
+monitoring/grafana/gpu_serving_dashboard.json
+```
+
+The observability stack helps identify:
+
+- GPU saturation
+- Inference bottlenecks
+- Serving performance changes
+- Resource utilization
+- Scaling behavior
+
+## Benchmark Results
+
+### Baseline Configuration
+
+Recorded benchmark date: June 9, 2026.
+
+Hardware and workload:
+
+| Parameter | Value |
+|-----------|-------|
+| GPU | NVIDIA A10G |
+| GPU memory | 24 GB |
+| Model | Llama 3 8B Instruct |
+| Requests | 500 |
+| Concurrency | 32 |
+| Average prompt tokens | 128 |
+| Average output tokens | 256 |
+
+### Performance Comparison
+
+| Backend | TTFT p50 | TTFT p99 | Throughput | Requests/sec |
+|---------|----------|----------|------------|--------------|
+| vLLM | 142 ms | 387 ms | 1,840 tok/s | 28.4 |
+| Triton TRT-LLM | 98 ms | 241 ms | 2,310 tok/s | 35.7 |
+| Ray Serve with vLLM | 156 ms | 412 ms | 1,780 tok/s | 27.5 |
+
+All measurements use concurrency 32.
+
+### Benchmark Findings
+
+The recorded baseline indicates that Triton achieved approximately 31% lower median time-to-first-token than native vLLM.
+
+Additional findings suggest that vLLM's PagedAttention advantages become more significant at higher concurrency levels.
+
+These findings are workload-specific and should not be treated as universal performance rankings.
+
+### Reproducibility Limitation
+
+The committed baseline results do not include complete execution provenance.
+
+Missing metadata includes:
+
+- Source commit identifier
+- Exact benchmark commands
+- Backend dependency versions
+
+Therefore, the historical benchmark numbers are not fully reproducible from the repository alone.
+
+Raw benchmark artifact:
+
+```text
+results/baseline_bench_2026-06.json
+```
+
+## Performance Testing
+
+The project includes benchmarking tools for measuring inference performance.
+
+### Load Testing
+
+Run a load test against an active gateway:
+
+```bash
+python -m evals.load_test \
+  --requests 500 \
+  --concurrency 32 \
+  --output-dir results/load_tests
+```
+
+### Evaluation Metrics
+
+Performance testing covers:
+
+- Time to first token
+- Request latency
+- Token throughput
+- Requests per second
+- Concurrent execution behavior
+- Backend performance differences
+
+Benchmark results are written to structured artifacts for further analysis.
 
 ## Testing
+
+### Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 pip install -e ".[dev]"
+```
 
-# Exactly what .github/workflows/ci.yml runs
+### Run Static Checks
+
+```bash
 ruff check .
+```
+
+### Run Unit Tests
+
+```bash
+pytest tests/ -v -m "not gpu"
+```
+
+### Coverage Testing
+
+```bash
 pytest tests/ -v -m "not gpu" \
-  --cov=api --cov=vllm --cov=triton --cov=evals \
+  --cov=api \
+  --cov=vllm \
+  --cov=triton \
+  --cov=evals \
   --cov-report=term-missing \
   --cov-fail-under=80
 ```
 
-16 mock-based tests across six modules; measured coverage over the CI-scoped packages is 87% against an 80% gate. CI runs on `ubuntu-latest` with Python 3.11 and no GPU, so tests marked `@pytest.mark.gpu` are excluded. `mypy` is configured in `pyproject.toml` but is not part of CI. Coverage map and gaps: [docs/testing.md](docs/testing.md).
+### Test Coverage
 
-Load test against a running gateway:
+The reference test suite includes:
 
-```bash
-python -m evals.load_test --requests 500 --concurrency 32 --output-dir results/load_tests
-```
+- 16 mock-based tests
+- Six test modules
+- 87% measured coverage for CI-scoped packages
+- 80% minimum coverage requirement
 
----
+The CI workflow runs on Ubuntu with Python 3.11.
+
+GPU-dependent tests are excluded from the standard CI run.
+
+Mypy configuration is included but is not part of the current CI pipeline.
 
 ## Project Structure
 
-```
-model-serving-stack/
-├── api/                          # OpenAI-compatible FastAPI gateway (port 8080)
-│   ├── main.py                   # /v1/chat/completions, /v1/models, /health, StructuredLoggingMiddleware
-│   └── models.py                 # Pydantic request/response schemas
-├── vllm/                         # vLLM runtime
-│   ├── server.py                 # Launches vllm.entrypoints.openai.api_server from env vars
-│   ├── openai_server.py          # In-process FastAPI server over AsyncLLMEngine
-│   ├── client.py                 # VLLMClient used by the gateway, Ray Serve and BentoML
-│   ├── client_test.py            # Standalone load-test script (not a pytest module)
-│   └── batching_config.yaml      # Continuous-batching reference values
-├── triton/                       # Triton Inference Server
-│   ├── client.py                 # HTTP/gRPC client wrapper
-│   ├── perf_analyzer.sh          # perf_analyzer benchmark script
-│   └── model_repository/llama3/  # config.pbtxt + 1/model.py (Python backend)
-├── ray_serve/                    # Ray Serve
-│   ├── deployment.py             # @serve.deployment with AutoscalingConfig
-│   ├── multi_model_router.py     # Weighted traffic split across models
-│   └── autoscaling_config.yaml   # Autoscaling reference values
-├── bentoml/                      # BentoML packaging
-│   ├── service.py                # Service + runner definition
-│   ├── bentofile.yaml            # Build manifest
-│   └── build_and_push.sh         # Build and push helper
-├── kubernetes/                   # K8s manifests
-│   ├── vllm-deployment.yaml      # Deployment + Service (nvidia.com/gpu: 1)
-│   ├── triton-deployment.yaml    # Deployment + Service (HTTP/gRPC/metrics)
-│   ├── dcgm-exporter.yaml        # DCGM Exporter DaemonSet
-│   ├── hpa-dcgm.yaml             # HPA on DCGM_FI_DEV_GPU_UTIL (canonical)
-│   └── ingress.yaml              # NGINX ingress for /vllm and /triton
+```text
+project/
+├── api/
+│   ├── main.py
+│   └── models.py
+│
+├── vllm/
+│   ├── server.py
+│   ├── openai_server.py
+│   ├── client.py
+│   ├── client_test.py
+│   └── batching_config.yaml
+│
+├── triton/
+│   ├── client.py
+│   ├── perf_analyzer.sh
+│   └── model_repository/
+│       └── llama3/
+│
+├── ray_serve/
+│   ├── deployment.py
+│   ├── multi_model_router.py
+│   └── autoscaling_config.yaml
+│
+├── bentoml/
+│   ├── service.py
+│   ├── bentofile.yaml
+│   └── build_and_push.sh
+│
+├── kubernetes/
+│   ├── vllm-deployment.yaml
+│   ├── triton-deployment.yaml
+│   ├── dcgm-exporter.yaml
+│   ├── hpa-dcgm.yaml
+│   └── ingress.yaml
+│
 ├── monitoring/
-│   ├── prometheus/prometheus.yml # Scrape configs (DCGM, vLLM, Triton)
-│   └── grafana/gpu_serving_dashboard.json
+│   ├── prometheus/
+│   │   └── prometheus.yml
+│   └── grafana/
+│       └── gpu_serving_dashboard.json
+│
 ├── configs/
-│   ├── models.yaml               # Model registry read by the gateway
-│   └── serving.yaml              # Reference backend settings
+│   ├── models.yaml
+│   └── serving.yaml
+│
 ├── evals/
-│   ├── benchmark.py              # Async latency/throughput harness
-│   └── load_test.py              # CLI wrapper that writes a JSON report
-├── results/                      # Committed benchmark artifacts + schema
+│   ├── benchmark.py
+│   └── load_test.py
+│
+├── results/
 │   ├── README.md
 │   └── baseline_bench_2026-06.json
-├── tests/                        # pytest suite (6 modules, mock-based)
-├── docs/                         # architecture, configuration, benchmarks, autoscaling, testing
-├── deploy/                       # Dockerfile + Compose stack with the gateway
-├── notebooks/serving_demo.ipynb
-├── docker-compose.yml            # Root: Triton + vLLM + Prometheus + Grafana
-├── pyproject.toml                # ruff, mypy, pytest, coverage config
+│
+├── tests/
+│
+├── docs/
+│   ├── architecture.md
+│   ├── configuration.md
+│   ├── benchmarks.md
+│   ├── autoscaling.md
+│   └── testing.md
+│
+├── deploy/
+│
+├── notebooks/
+│   └── serving_demo.ipynb
+│
+├── docker-compose.yml
+├── pyproject.toml
 └── requirements.txt
 ```
 
----
+## Design Decisions
+
+### OpenAI-Compatible API
+
+A standardized inference API simplifies integration with applications and existing LLM clients.
+
+The gateway currently supports model discovery and chat completions through vLLM.
+
+### Multiple Serving Runtimes
+
+Different inference workloads have different performance characteristics.
+
+Supporting vLLM, Triton, and Ray Serve allows comparison of deployment architectures.
+
+The backends are not automatically interchangeable through the gateway.
+
+### GPU-Based Autoscaling
+
+GPU utilization provides a resource-oriented scaling signal.
+
+The HPA configuration demonstrates how DCGM metrics can drive Kubernetes replica counts.
+
+### Containerized Infrastructure
+
+Docker Compose supports local deployment.
+
+Kubernetes manifests provide a reference for GPU-backed cluster operation.
+
+### Reproducible Testing
+
+Mock-based tests allow core application behavior to be validated without GPU hardware.
+
+Separate benchmarking tools evaluate serving performance.
+
+### Infrastructure Observability
+
+Prometheus and Grafana provide visibility into serving and GPU infrastructure.
+
+Monitoring is treated as part of the deployment architecture rather than an optional addition.
+
+## Production Considerations
+
+Before production deployment, evaluate:
+
+- GPU availability and capacity
+- Model memory requirements
+- Inference concurrency
+- Request timeouts
+- Autoscaling thresholds
+- Model loading and startup latency
+- Authentication and authorization
+- Network security
+- Request logging
+- Monitoring and alerting
+- Dependency compatibility
+- Deployment rollback procedures
+- Benchmark reproducibility
+
+This repository provides an infrastructure reference rather than a complete production-ready serving platform.
 
 ## Documentation
 
-| Document | Contents |
-|----------|----------|
-| [docs/architecture.md](docs/architecture.md) | Component diagram, backend trade-offs, request flow, design decisions |
-| [docs/configuration.md](docs/configuration.md) | Environment variables, YAML ownership, worked examples |
-| [docs/benchmarks.md](docs/benchmarks.md) | Baseline results, rerun commands, reproducibility gap |
-| [docs/autoscaling.md](docs/autoscaling.md) | DCGM-driven HPA: dependencies, apply order, tuning |
-| [docs/testing.md](docs/testing.md) | Coverage map, uncovered areas, `gpu` marker |
-| [results/README.md](results/README.md) | Required metadata schema for new benchmark artifacts |
-| [CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [SECURITY.md](SECURITY.md) · [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Workflow, release history, security policy, conduct |
+Additional technical documentation is organized under `docs/`.
 
----
+| Document | Description |
+|----------|-------------|
+| architecture.md | Infrastructure architecture and request flow |
+| configuration.md | Environment and serving configuration |
+| benchmarks.md | Performance measurement and limitations |
+| autoscaling.md | GPU-driven autoscaling configuration |
+| testing.md | Unit tests, coverage, and CI behavior |
 
-## Related Repos
+Additional repository documentation may include:
 
-Sibling reference projects by the same author. They are independent repositories, not runtime dependencies of this one.
-
-| Repo | Relationship |
-|------|--------------|
-| [`nvidia-nim-agent-toolkit`](https://github.com/TylrDn/nvidia-nim-agent-toolkit) | Multi-agent toolkit over NVIDIA NIM — the client side of a serving stack like this |
-| [`inference-optimization-bench`](https://github.com/TylrDn/inference-optimization-bench) | Quantization and inference benchmarking (GGUF, AWQ, GPTQ) that informs backend choice |
-| [`llm-finetuning-lab`](https://github.com/TylrDn/llm-finetuning-lab) | LoRA/QLoRA fine-tuning pipeline producing weights that a stack like this serves |
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+- CONTRIBUTING.md
+- CHANGELOG.md
+- SECURITY.md
+- CODE_OF_CONDUCT.md
